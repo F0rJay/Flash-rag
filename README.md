@@ -10,7 +10,7 @@ Flash-RAG 是一个基于 **vLLM** 的高并发垂直领域智能问答引擎，
 Flash-RAG/
 ├── config/                # 配置文件目录
 │   └── train_config.yaml  # 训练与模型相关的全部参数
-├── data/                  # 训练/评测数据
+├── datasets/                  # 训练/评测数据
 │   └── train.jsonl
 ├── output/                # 训练输出与日志（自动生成）
 ├── train.py               # 训练脚本，只负责逻辑，不写死参数

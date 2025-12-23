@@ -13,7 +13,7 @@ model:
 
 data:
   # 训练数据路径
-  path: "data/train.jsonl"
+  path: "datasets/train.jsonl"
 
 quantization:
   # 是否启用 4-bit 量化 (True/False)
