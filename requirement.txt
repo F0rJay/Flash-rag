@@ -1,0 +1,19 @@
+# 4bit量化
+pip install -i http://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com bitsandbytes  
+
+pip install vllm
+# RAG核心依赖
+# 安装 FastAPI 和 Uvicorn
+pip install fastapi uvicorn
+
+# 安装 LangChain 及其核心组件
+# pydantic 用于数据校验
+pip install langchain langchain-community pydantic
+
+# 安装向量数据库 (Vector DB) - 我们使用 ChromaDB (轻量级且易于集成)
+pip install chromadb
+
+# 安装 HuggingFace embedding 模型 (用于将文本转换为向量)
+pip install sentence-transformers
+
+pip install -i http://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com langchain-community langchain-huggingface

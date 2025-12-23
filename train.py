@@ -76,24 +76,19 @@ training_args = TrainingArguments(
     lr_scheduler_type="constant",
 )
 
-# === 6. 初始化 SFTTrainer ===
-# 自定义数据格式化函数 (Llama 3 格式)
+# === 6. 初始化 SFTTrainer 中的自定义数据格式化函数 ===
 def formatting_prompts_func(example):
-    output_texts = []
-    for i in range(len(example['instruction'])):
-        text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{example['instruction'][i]}\n{example['input'][i]}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n{example['output'][i]}<|eot_id|>"
-        output_texts.append(text)
-    return output_texts
+    # 确保 'input' 字段存在，即使是空字符串
+    input_text = example.get('input', '')
+    # Llama 3 标准对话模板
+    text = f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{example['instruction']}\n{input_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n{example['output']}<|eot_id|>"
+    return text
 
 trainer = SFTTrainer(
     model=model,
     train_dataset=dataset,
     peft_config=peft_config,
-    dataset_text_field="output", # 即使有 formatting_func，TRL 有时也需要指定一个字段作为长度参考
-    max_seq_length=cfg['model']['max_seq_length'],
-    tokenizer=tokenizer,
     args=training_args,
-    packing=False,
     formatting_func=formatting_prompts_func,
 )
 
