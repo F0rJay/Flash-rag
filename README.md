@@ -397,122 +397,266 @@ curl -X POST http://localhost:8080/api/rag/chat \
 
 ### Phase 1: 模型特训 (Training & Optimization)
 
-**任务：** 让模型"懂行"且"轻量"。
+**任务：** 让模型"懂行"且"轻量"，适配法律垂直领域。
 
-**技术栈：** HuggingFace Transformers, PEFT, AutoGPTQ / BitsAndBytes
+**技术栈：** HuggingFace Transformers, PEFT, BitsAndBytes, TRL, TensorBoard
 
 #### 关键概念
 
-| 概念 | 说明 | 关键参数 |
+| 概念 | 说明 | 项目配置 |
 |------|------|----------|
-| **LoRA (Low-Rank Adaptation)** | 只训练旁路小矩阵，大幅减少训练成本 | `r` (Rank, 如 8 或 16)<br>`target_modules` (通常涵盖所有 Linear layers) |
-| **Merge Weights (权重合并)** | ⚠️ **必做步骤！** 训练完必须将 LoRA 权重合并回底座模型 | 保存为独立的 `.safetensors` 格式 |
-| **Quantization (量化)** | 推荐 AWQ 格式（比 GPTQ 对 vLLM 支持更好） | 将显存需求砍到 1/3 |
+| **LoRA (Low-Rank Adaptation)** | 只训练旁路小矩阵，大幅减少训练成本 | `r=64`, `lora_alpha=128`<br>`target_modules`: 全量线性层（7个模块） |
+| **4-bit 量化训练** | 使用 BitsAndBytes 在训练时量化，降低显存占用 | `load_in_4bit: true`<br>支持 RTX 5090 大 batch size |
+| **验证集评估** | 训练过程中自动评估，保存最佳模型 | `evaluation_strategy: "steps"`<br>`eval_steps: 100` |
+| **TensorBoard 可视化** | 实时监控训练损失、验证损失、学习率 | `report_to: "tensorboard"`<br>`logging_dir: "./output/logs"` |
+| **GPU 监控** | 监控显存、使用率、温度、功耗 | `gpu_monitor.enabled: true`<br>自动记录到 TensorBoard |
+| **Merge Weights (权重合并)** | ⚠️ **必做步骤！** 训练完必须将 LoRA 权重合并回底座模型 | 保存为完整模型，vLLM 可直接加载 |
+
+#### 训练流程
+
+**1. 准备数据集：**
+```bash
+# 转换和划分数据集
+python scripts/prepare_dataset.py \
+    --input DISC-Law-SFT-Pair-QA-released.jsonl \
+    --output-dir data/datasets
+
+# 分析数据集质量
+python scripts/analyze_dataset.py
+```
+
+**2. 配置训练参数：**
+编辑 `config/train_config.yaml`：
+- 模型路径、数据路径
+- LoRA 参数（r, alpha, dropout）
+- 训练参数（batch_size, learning_rate, epochs）
+- 评估设置（eval_steps, load_best_model_at_end）
+- GPU 监控设置
+
+**3. 开始训练：**
+```bash
+# 启动训练（自动启用 TensorBoard 和 GPU 监控）
+python src/training/train.py
+
+# 在另一个终端查看训练可视化
+bash scripts/view_training.sh
+# 访问 http://localhost:6006
+```
+
+**4. 模型评估：**
+```bash
+# 评估 LoRA 适配器（BLEU、ROUGE、困惑度）
+python src/training/evaluate.py \
+    --model_path output/llama3-law-assistant-lora
+```
+
+**5. 合并权重（必须！）：**
+```bash
+# 合并 LoRA 权重到基础模型
+python src/training/merge.py
+# 合并后的模型保存在 output/llama3-law-merged/
+
+# 评估合并后的模型
+python src/training/evaluate.py \
+    --model_path output/llama3-law-merged
+```
 
 #### ⚠️ 避坑指南
 
-> **重要：** 只有合并了权重，推理速度才会快。挂载 Adapter 推理反而会变慢。
-
-**训练流程：**
-```bash
-# 1. 训练 LoRA 适配器
-python src/training/train.py
-
-# 2. 合并权重（必须！）
-python src/training/merge.py
-
-# 3. 量化（可选，但推荐）
-# 使用 AutoGPTQ 或 AWQ 工具进行量化
-# 量化后的模型路径需要在 vllm.sh 中指定
-```
+> **重要：** 
+> - 只有合并了权重，推理速度才会快。挂载 Adapter 推理反而会变慢。
+> - 训练时使用 4-bit 量化可大幅降低显存占用，但合并后的模型是完整精度。
+> - 验证集评估会自动保存最佳模型，避免过拟合。
+> - GPU 监控可帮助发现显存瓶颈和性能问题。
 
 ---
 
 ### Phase 2: 极速推理 (Inference Engine)
 
-**任务：** 榨干 GPU 性能，解决显存瓶颈。
+**任务：** 榨干 GPU 性能，实现高并发低延迟推理。
 
-**技术栈：** vLLM
+**技术栈：** vLLM (PagedAttention)
 
 #### 核心机制
 
-- **PagedAttention**: 显存分页管理，拒绝碎片化
+- **PagedAttention**: 显存分页管理，拒绝碎片化，支持高并发
+- **Continuous Batching**: 动态批处理，自动管理请求队列
+- **KV Cache 优化**: 智能管理 KV Cache，平衡显存和性能
 
-#### 启动参数示例
+#### 启动方式
 
-使用项目提供的脚本（推荐）：
+**使用项目脚本（推荐）：**
 ```bash
 bash scripts/vllm.sh
 ```
 
-脚本会自动：
-- 检测模型路径（`output/llama3-law-merged`）
-- 设置合适的显存使用率（0.85）
-- 配置并发限制（max-num-seqs 128）
+脚本配置（`scripts/vllm.sh`）：
+- 模型路径：`output/llama3-law-merged`
+- 数据类型：`bfloat16`（RTX 5090 推荐）
+- 显存使用率：`0.85`（预留 15% 给系统）
+- 最大序列长度：`4096`（防止 OOM）
+- 最大并发序列：`128`（控制 KV Cache 占用）
+- 服务端口：`8000`
 
-手动启动（如需自定义参数）：
+**手动启动（自定义参数）：**
 ```bash
 vllm serve \
     output/llama3-law-merged \
     --host 0.0.0.0 \
     --port 8000 \
     --dtype bfloat16 \
-    --quantization awq \          # 如果模型量化过，必须加
-    --gpu-memory-utilization 0.85 \ # 显存预留比例，越大 KV Cache 越多
-    --max-model-len 4096 \        # 强制截断，防止 OOM
-    --max-num-seqs 128            # 限制并发序列数
+    --gpu-memory-utilization 0.85 \
+    --max-model-len 4096 \
+    --max-num-seqs 128
+```
+
+**检查服务状态：**
+```bash
+bash scripts/check_vllm.sh
+# 或手动检查
+curl http://localhost:8000/health
 ```
 
 #### 性能调优
 
-| 指标 | 说明 | 平衡策略 |
-|------|------|----------|
-| **Throughput (吞吐量)** | 单位时间处理的请求数 | Batch size 越大，吞吐越高 |
-| **Latency (延迟)** | 单个请求的响应时间 | 但延迟可能增加，需寻找平衡点 |
+| 参数 | 说明 | 项目配置 | 调优建议 |
+|------|------|----------|----------|
+| **gpu-memory-utilization** | 显存使用率 | `0.85` | 越高 KV Cache 越多，但可能 OOM |
+| **max-model-len** | 最大序列长度 | `4096` | 根据模型和显存调整 |
+| **max-num-seqs** | 最大并发序列数 | `128` | 控制 KV Cache 占用，影响吞吐量 |
+| **dtype** | 数据类型 | `bfloat16` | RTX 5090 推荐 bfloat16 |
+
+**性能指标：**
+- **Throughput (吞吐量)**: 单位时间处理的 tokens 数
+- **Latency (延迟)**: 单个请求的响应时间（P50, P99）
+- **GPU 利用率**: 监控 GPU 使用率，避免空闲
 
 #### ⚠️ 避坑指南
 
-> **常见错误：** 遇到 `Request ignored` 报错，通常是：
-> - `max-model-len` 没设限制
-> - 显存被 KV Cache 撑爆了
-> - 需要降低 `gpu-memory-utilization` 或 `max-num-seqs`
+> **常见错误：**
+> - `Request ignored`: 通常是 `max-num-seqs` 已满或显存不足
+> - `CUDA OOM`: 降低 `gpu-memory-utilization` 或 `max-num-seqs`
+> - `max-model-len` 过小：导致长文本被截断，需要增大（但会增加显存）
+> - 服务启动慢：首次启动需要加载模型，耐心等待
+
+> **优化建议：**
+> - 如果显存充足，可适当提高 `gpu-memory-utilization` 到 0.9
+> - 如果并发需求高，可增大 `max-num-seqs`（但要注意显存）
+> - 使用 `bfloat16` 而非 `float16`，数值稳定性更好
 
 ---
 
 ### Phase 3: 后端架构 (Backend & RAG)
 
-**任务：** 搭建不阻塞的 API，实现打字机效果。
+**任务：** 搭建异步 RAG API，支持多知识库混合检索。
 
-**技术栈：** FastAPI, Uvicorn, LangChain / LlamaIndex
+**技术栈：** FastAPI, Uvicorn, LangChain, ChromaDB, HuggingFaceEmbeddings
 
 #### 核心模式
 
-- **Async/Await**: 必须使用 `async def` 定义接口，调用数据库和模型时必须 `await`
-- **SSE (Server-Sent Events)**: 流式输出的标准协议
+- **Async/Await**: 所有接口使用 `async def`，数据库和模型调用必须 `await`
+- **多知识库支持**: 支持法条型、案例型、判决书型三种知识库
+- **混合检索**: 自动组合多个知识库的检索结果
 
-#### RAG 黄金链路
+#### RAG 知识库构建
+
+**1. 准备知识库数据：**
+```bash
+# 法条型知识库（从 reference 字段提取）
+python scripts/prepare_rag_knowledge.py \
+    DISC-Law-SFT-Triplet-QA-released.jsonl \
+    --mode law \
+    --output data/docs/legal_docs.txt
+
+# 案例型知识库（从 input 和 output 提取）
+python scripts/prepare_rag_knowledge.py \
+    DISC-Law-SFT-Triplet-QA-released.jsonl \
+    --mode case \
+    --output data/docs/case_docs.txt
+
+# 判决书型知识库（从 pair 数据集提取）
+python scripts/prepare_rag_knowledge.py \
+    DISC-Law-SFT-Pair.jsonl \
+    --mode judgement \
+    --output data/docs/judgement_docs.txt
+```
+
+**2. 构建向量数据库：**
+```bash
+# 构建法条型知识库
+python src/core/ingest.py \
+    --docs-path data/docs/legal_docs.txt \
+    --knowledge-type law \
+    --chunk-size 500 \
+    --chunk-overlap 50
+
+# 构建案例型知识库
+python src/core/ingest.py \
+    --docs-path data/docs/case_docs.txt \
+    --knowledge-type case \
+    --chunk-size 800 \
+    --chunk-overlap 80
+
+# 构建判决书型知识库
+python src/core/ingest.py \
+    --docs-path data/docs/judgement_docs.txt \
+    --knowledge-type judgement \
+    --chunk-size 1500 \
+    --chunk-overlap 150
+```
+
+#### RAG 检索流程
+
+**当前实现（`src/api/main.py`）：**
 
 ```mermaid
 graph LR
-    A[用户问题] --> B[Rewrite<br/>改写问题]
-    B --> C[Retrieve<br/>混合检索]
-    C --> D[Rerank<br/>重排序]
-    D --> E[Generate<br/>生成答案]
+    A[用户问题] --> B[多知识库检索]
+    B --> C[法条型<br/>k=2]
+    B --> D[案例型<br/>k=2]
+    B --> E[判决书型<br/>k=1]
+    C --> F[合并上下文]
+    D --> F
+    E --> F
+    F --> G[构建 Prompt]
+    G --> H[vLLM 生成]
 ```
 
-1. **Rewrite**: 改写用户问题，提升检索准确率
-2. **Retrieve**: 混合检索（Vector + Keyword）
-3. **Rerank (重排序)**: 使用 BGE-Reranker 等小模型对检索结果精排（Top 50 → Top 5）
-4. **Generate**: 拼接 Prompt 送入 vLLM
+**特性：**
+- ✅ **自动多知识库加载**: 根据存在的向量库自动启用
+- ✅ **混合检索**: 同时从多个知识库检索，合并结果
+- ✅ **智能上下文拼接**: 根据知识库类型调整 chunk 大小
+- ✅ **异步处理**: 所有操作使用 async/await，不阻塞
 
-**当前实现：**
+**知识库配置：**
+| 知识库类型 | 向量库路径 | 检索数量 | 适用场景 |
+|-----------|-----------|---------|---------|
+| 法条型 | `chroma_db/` | k=2 | 法律条文查询 |
+| 案例型 | `chroma_db_case/` | k=2 | 案例分析 |
+| 判决书型 | `chroma_db_judgement/` | k=1 | 完整判决书参考 |
 
-项目已实现基础的 RAG 流程（位于 `src/api/main.py`）：
-- ✅ 向量检索（使用 ChromaDB）
-- ✅ 上下文拼接
-- ✅ vLLM 集成
+#### API 服务启动
 
-**扩展方向：**
+```bash
+# 启动 FastAPI 服务
+bash scripts/fastapi.sh
+# 或手动启动
+uvicorn src.api.main:app --host 0.0.0.0 --port 8001
+```
+
+**API 端点：**
+- `POST /api/rag/chat`: RAG 问答接口
+- `GET /health`: 健康检查
+
+#### 扩展方向
+
+**待实现功能：**
+1. **Query Rewrite**: 改写用户问题，提升检索准确率
+2. **Rerank**: 使用 BGE-Reranker 对检索结果重排序（Top 50 → Top 5）
+3. **流式输出**: 实现 SSE 流式响应，打字机效果
+4. **多轮对话**: 支持对话历史上下文
+
+**实现示例：**
 ```python
 # 在 src/api/main.py 中扩展
 @app.post("/api/rag/chat")
@@ -520,8 +664,8 @@ async def chat_endpoint(request: ChatRequest):
     # 1. 改写问题（待实现）
     rewritten_query = await rewrite_query(request.query)
     
-    # 2. 检索（已实现）
-    docs = await retriever.retrieve(rewritten_query)
+    # 2. 多知识库检索（已实现）
+    docs = await mixed_retrieve(rewritten_query)
     
     # 3. 重排序（待实现）
     ranked_docs = await reranker.rerank(docs, top_k=5)
