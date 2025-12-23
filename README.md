@@ -1,6 +1,6 @@
-## Flash-RAG
+## LegalFlash-RAG
 
-Flash-RAG 是一个基于 **vLLM** 的高并发垂直领域智能问答引擎，专为法律领域设计，提供从模型训练、推理部署到 RAG 检索的完整解决方案。
+LegalFlash-RAG 是一个基于 **vLLM** 的高并发垂直领域智能问答引擎，专为法律领域设计，提供从模型训练、推理部署到 RAG 检索的完整解决方案。
 
 ### ✨ 核心特性
 
@@ -56,7 +56,7 @@ Flash-RAG 是一个基于 **vLLM** 的高并发垂直领域智能问答引擎，
 ## 项目结构
 
 ```text
-Flash-RAG/
+LegalFlash-RAG/
 ├── src/                   # 源代码目录
 │   ├── core/              # 核心功能模块
 │   │   ├── CustomVLLM.py  # 自定义 vLLM 集成
@@ -108,8 +108,8 @@ Flash-RAG/
 
 ```bash
 # 克隆项目
-git clone https://github.com/F0rJay/Flash-rag.git
-cd Flash-rag
+git clone https://github.com/F0rJay/LegalFlash-RAG.git
+cd LegalFlash-RAG
 
 # 安装依赖
 pip install -r requirements.txt

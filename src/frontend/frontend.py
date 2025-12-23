@@ -4,10 +4,10 @@ import json
 
 # === 配置 ===
 BACKEND_URL = "http://localhost:8080/api/rag/chat"
-st.set_page_config(page_title="Flash-RAG 法律助手", page_icon="⚖️")
+st.set_page_config(page_title="LegalFlash-RAG 法律助手", page_icon="⚖️")
 
 # === 界面标题 ===
-st.title("⚖️ Flash-RAG 法律智能助手")
+st.title("⚖️ LegalFlash-RAG 法律智能助手")
 st.caption("🚀 Powered by Llama 3 (LoRA) + vLLM + LangChain")
 
 # === 侧边栏：项目介绍 ===
