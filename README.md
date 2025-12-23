@@ -8,34 +8,136 @@ Flash-RAG 是一个基于 **vLLM** 的高并发垂直领域智能问答引擎，
 
 ```text
 Flash-RAG/
-├── config/                # 配置文件目录
-│   └── train_config.yaml  # 训练与模型相关的全部参数
-├── datasets/                  # 训练/评测数据
-│   └── train.jsonl
-├── output/                # 训练输出与日志（自动生成）
-├── train.py               # 训练脚本，只负责逻辑，不写死参数
-└── requirements.txt       # 项目依赖
+├── src/                   # 源代码目录
+│   ├── core/              # 核心功能模块
+│   │   ├── CustomVLLM.py  # 自定义 vLLM 集成
+│   │   └── ingest.py      # 文档向量化处理
+│   ├── api/               # API 服务
+│   │   └── main.py       # FastAPI RAG 服务
+│   ├── training/          # 训练相关
+│   │   ├── train.py      # 模型训练脚本
+│   │   └── merge.py      # 权重合并脚本
+│   └── frontend/         # 前端相关
+│       └── frontend.py
+├── scripts/              # 脚本目录
+│   ├── vllm.sh           # vLLM 服务启动脚本
+│   ├── fastapi.sh        # FastAPI 服务启动脚本
+│   ├── check_vllm.sh     # vLLM 服务检查脚本
+│   └── frontend.sh       # 前端启动脚本
+├── config/               # 配置文件目录
+│   └── train_config.yaml # 训练与模型相关的全部参数
+├── data/                 # 数据目录
+│   ├── datasets/         # 训练/评测数据
+│   │   └── train.jsonl
+│   └── docs/             # 文档数据
+│       └── legal_docs.txt
+├── tests/                # 测试文件
+│   └── test_client.py    # API 测试客户端
+├── output/               # 训练输出与日志（自动生成，已加入 .gitignore）
+├── chroma_db/            # 向量数据库（自动生成，已加入 .gitignore）
+├── requirements.txt      # 项目依赖
+├── .gitignore           # Git 忽略规则
+└── README.md            # 项目说明文档
 ```
 
 ---
 
 ## 快速开始
 
-1. 安装依赖：
+### 1. 环境准备
 
 ```bash
+# 克隆项目
+git clone https://github.com/F0rJay/Flash-rag.git
+cd Flash-rag
+
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-2. 准备数据（确保 `data/train.jsonl` 存在且格式正确）。
+### 2. 准备数据
 
-3. 启动训练：
+确保以下文件存在：
+- `data/datasets/train.jsonl` - 训练数据（格式：每行一个 JSON，包含 `instruction`, `input`, `output` 字段）
+- `data/docs/legal_docs.txt` - 知识库文档（用于 RAG）
+
+### 3. 模型训练与部署
+
+#### 步骤 1: 训练 LoRA 适配器
 
 ```bash
-python train.py
+# 从项目根目录运行
+python src/training/train.py
 ```
 
-根据需要修改 `config/train_config.yaml` 即可调整模型、数据和训练参数。
+训练配置在 `config/train_config.yaml` 中，可根据需要调整：
+- 模型路径
+- 训练参数（学习率、批次大小等）
+- LoRA 参数（rank、alpha 等）
+
+#### 步骤 2: 合并权重（必须！）
+
+```bash
+python src/training/merge.py
+```
+
+合并后的模型将保存在 `output/llama3-law-merged/` 目录。
+
+#### 步骤 3: 文档向量化（RAG 知识库构建）
+
+```bash
+python src/core/ingest.py
+```
+
+这将：
+- 加载 `data/docs/legal_docs.txt`
+- 切分文档为块
+- 生成向量嵌入
+- 存储到 `chroma_db/` 向量数据库
+
+### 4. 启动服务
+
+#### 启动 vLLM 推理服务（终端 1）
+
+```bash
+bash scripts/vllm.sh
+```
+
+服务将在 `http://localhost:8000` 启动。
+
+**检查服务状态：**
+```bash
+bash scripts/check_vllm.sh
+```
+
+#### 启动 FastAPI RAG 服务（终端 2）
+
+```bash
+bash scripts/fastapi.sh
+```
+
+服务将在 `http://localhost:8080` 启动。
+
+### 5. 测试 API
+
+```bash
+# 使用测试客户端
+python tests/test_client.py
+
+# 或使用 curl
+curl -X POST http://localhost:8080/api/rag/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query": "如果甲方逾期支付本金，需要承担什么违约责任？"}'
+```
+
+### 配置说明
+
+所有配置都在 `config/train_config.yaml` 中，包括：
+- 模型配置（模型名称、最大序列长度）
+- 数据配置（训练数据路径）
+- 训练参数（学习率、批次大小、训练轮数）
+- LoRA 参数（rank、alpha、dropout）
+- 量化配置（是否启用 4-bit 量化）
 
 ---
 
@@ -68,13 +170,14 @@ python train.py
 **训练流程：**
 ```bash
 # 1. 训练 LoRA 适配器
-python train.py
+python src/training/train.py
 
 # 2. 合并权重（必须！）
-python merge.py
+python src/training/merge.py
 
 # 3. 量化（可选，但推荐）
 # 使用 AutoGPTQ 或 AWQ 工具进行量化
+# 量化后的模型路径需要在 vllm.sh 中指定
 ```
 
 ---
@@ -91,9 +194,20 @@ python merge.py
 
 #### 启动参数示例
 
+使用项目提供的脚本（推荐）：
+```bash
+bash scripts/vllm.sh
+```
+
+脚本会自动：
+- 检测模型路径（`output/llama3-law-merged`）
+- 设置合适的显存使用率（0.85）
+- 配置并发限制（max-num-seqs 128）
+
+手动启动（如需自定义参数）：
 ```bash
 vllm serve \
-    /path/to/merged_model \
+    output/llama3-law-merged \
     --host 0.0.0.0 \
     --port 8000 \
     --dtype bfloat16 \
@@ -145,21 +259,28 @@ graph LR
 3. **Rerank (重排序)**: 使用 BGE-Reranker 等小模型对检索结果精排（Top 50 → Top 5）
 4. **Generate**: 拼接 Prompt 送入 vLLM
 
-**示例代码结构：**
+**当前实现：**
+
+项目已实现基础的 RAG 流程（位于 `src/api/main.py`）：
+- ✅ 向量检索（使用 ChromaDB）
+- ✅ 上下文拼接
+- ✅ vLLM 集成
+
+**扩展方向：**
 ```python
-# FastAPI 异步接口示例
+# 在 src/api/main.py 中扩展
 @app.post("/api/rag/chat")
 async def chat_endpoint(request: ChatRequest):
-    # 1. 改写问题
+    # 1. 改写问题（待实现）
     rewritten_query = await rewrite_query(request.query)
     
-    # 2. 检索
+    # 2. 检索（已实现）
     docs = await retriever.retrieve(rewritten_query)
     
-    # 3. 重排序
+    # 3. 重排序（待实现）
     ranked_docs = await reranker.rerank(docs, top_k=5)
     
-    # 4. 生成
+    # 4. 生成（已实现）
     response = await llm.generate(context=ranked_docs, query=request.query)
     
     return {"response": response}
@@ -197,4 +318,48 @@ async def chat_endpoint(request: ChatRequest):
 - [vLLM 官方文档](https://docs.vllm.ai/)
 - [LangChain 文档](https://python.langchain.com/)
 - [PEFT (LoRA) 文档](https://huggingface.co/docs/peft/)
+- [HuggingFace Transformers](https://huggingface.co/docs/transformers/)
+
+## 🔧 常见问题
+
+### Q: 训练时出现显存不足？
+A: 在 `config/train_config.yaml` 中：
+- 启用 4-bit 量化：`load_in_4bit: true`
+- 减小批次大小：`per_device_train_batch_size: 4`
+- 增加梯度累积：`gradient_accumulation_steps: 2`
+
+### Q: vLLM 启动失败，提示 OOM？
+A: 在 `scripts/vllm.sh` 中：
+- 降低 `--gpu-memory-utilization`（如 0.8）
+- 减小 `--max-num-seqs`（如 64）
+- 减小 `--max-model-len`（如 2048）
+
+### Q: 如何添加新的文档到知识库？
+A: 
+1. 将文档添加到 `data/docs/` 目录
+2. 运行 `python src/core/ingest.py` 重新构建向量库
+
+### Q: 如何修改 API 端口？
+A: 
+- vLLM 服务：修改 `scripts/vllm.sh` 中的 `--port`
+- FastAPI 服务：修改 `scripts/fastapi.sh` 中的 `--port`
+
+## 📝 开发说明
+
+### 代码结构说明
+
+- `src/core/` - 核心功能模块，可独立使用
+- `src/api/` - API 服务层，依赖 core 模块
+- `src/training/` - 训练相关脚本，可独立运行
+- `scripts/` - 启动脚本，支持相对路径，可在任意位置运行
+
+### 扩展开发
+
+1. **添加新的检索器**：在 `src/core/` 中创建新模块
+2. **扩展 API 接口**：在 `src/api/main.py` 中添加路由
+3. **自定义训练流程**：修改 `src/training/train.py`
+
+---
+
+**License**: 见 [LICENSE](LICENSE) 文件
 

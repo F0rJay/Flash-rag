@@ -12,14 +12,23 @@ from peft import LoraConfig
 from trl import SFTTrainer
 
 # === 0. 读取配置文件函数 ===
-def load_config(config_path="config/train_config.yaml"):
+from pathlib import Path
+
+# 获取项目根目录
+project_root = Path(__file__).parent.parent.parent
+
+def load_config(config_path=None):
+    if config_path is None:
+        config_path = project_root / "config" / "train_config.yaml"
+    else:
+        config_path = project_root / config_path
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     return config
 
 # 加载配置
 cfg = load_config()
-print(f"Loading configuration from config/train_config.yaml...")
+print(f"Loading configuration from {project_root / 'config' / 'train_config.yaml'}...")
 
 # === 1. 量化配置 (从 Config 读取) ===
 bnb_config = None

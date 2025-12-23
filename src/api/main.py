@@ -8,10 +8,17 @@ from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_classic.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
-from CustomVLLM import CustomVLLM
+import sys
+from pathlib import Path
+
+# 添加项目根目录到路径
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+
+from src.core.CustomVLLM import CustomVLLM
 
 # 配置
-PERSIST_DIR = "./chroma_db"
+PERSIST_DIR = str(project_root / "chroma_db")
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 # LLM 服务的端口是 8000，CustomVLLM 默认指向这个地址
 

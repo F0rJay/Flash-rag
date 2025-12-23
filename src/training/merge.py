@@ -1,11 +1,19 @@
 import torch
 import os
 import yaml
+from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
+# 获取项目根目录
+project_root = Path(__file__).parent.parent.parent
+
 # === 0. 读取配置 ===
-def load_config(config_path="config/train_config.yaml"):
+def load_config(config_path=None):
+    if config_path is None:
+        config_path = project_root / "config" / "train_config.yaml"
+    else:
+        config_path = project_root / config_path
     with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
@@ -15,9 +23,9 @@ cfg = load_config()
 # 基础模型路径
 base_model_path = cfg['model']['name']
 # LoRA 适配器路径 (训练输出目录 + 新模型名)
-adapter_path = os.path.join(cfg['training']['output_dir'], cfg['model']['new_name'])
+adapter_path = project_root / cfg['training']['output_dir'] / cfg['model']['new_name']
 # 最终合并模型保存路径
-output_path = os.path.join(cfg['training']['output_dir'], "llama3-law-merged")
+output_path = project_root / cfg['training']['output_dir'] / "llama3-law-merged"
 
 print(f"Base Model: {base_model_path}")
 print(f"Adapter: {adapter_path}")
