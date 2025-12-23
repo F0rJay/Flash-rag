@@ -7,7 +7,9 @@ __pycache__/
 
 # 模型输出和缓存
 output/
-chroma_db/
+chroma_db/          # 法条型向量数据库
+chroma_db_case/     # 案例型向量数据库
+chroma_db_judgement/ # 判决书型向量数据库
 *.safetensors
 *.bin
 *.pt

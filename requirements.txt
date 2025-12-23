@@ -18,6 +18,11 @@ datasets>=2.0.0                 # HuggingFace Datasets（数据集加载和处�
 peft>=0.6.0                     # Parameter-Efficient Fine-Tuning（LoRA 适配器）
 trl>=0.7.0                      # Transformer Reinforcement Learning（SFTTrainer）
 bitsandbytes>=0.41.0            # 4-bit 量化支持（降低显存占用）
+tensorboard>=2.14.0             # TensorBoard（训练可视化）
+rouge-score>=0.1.2              # ROUGE 评估指标（文本生成质量评估）
+nltk>=3.8                       # NLTK（BLEU 评估指标和文本处理）
+pyyaml>=6.0                     # YAML 配置文件解析
+nvidia-ml-py3>=7.352.0          # NVIDIA Management Library（GPU 监控，可选但推荐）
 
 # ============================================
 # 3. 推理引擎

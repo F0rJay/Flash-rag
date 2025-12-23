@@ -13,7 +13,11 @@ model:
 
 data:
   # 训练数据路径
-  path: "data/datasets/train.jsonl"
+  train_path: "data/datasets/train.jsonl"
+  # 验证数据路径（可选，用于训练过程中的评估）
+  val_path: "data/datasets/val.jsonl"
+  # 测试数据路径（可选，用于最终评估）
+  test_path: "data/datasets/test.jsonl"
 
 quantization:
   # 是否启用 4-bit 量化 (True/False)
@@ -43,14 +47,26 @@ training:
   num_train_epochs: 3
   # 单卡批次大小 (5090 + 4bit量化，可以尝试 8, 16 甚至更高)
   per_device_train_batch_size: 8
+  # 验证批次大小（用于评估）
+  per_device_eval_batch_size: 8
   # 梯度累积步数 (如果显存不够，增大这个值，减小 batch_size)
   gradient_accumulation_steps: 1
   # 学习率
   learning_rate: 2.0e-4
   # 日志打印频率
   logging_steps: 5
+  # 评估频率（每 N 步评估一次，0 表示不评估）
+  eval_steps: 100
   # 模型保存频率
   save_steps: 50
+  # 是否在训练结束时评估
+  do_eval: true
+  # 评估策略 ("no", "steps", "epoch")
+  evaluation_strategy: "steps"
+  # 是否保存最佳模型（基于验证集指标）
+  load_best_model_at_end: true
+  # 用于选择最佳模型的指标
+  metric_for_best_model: "eval_loss"
   # 优化器
   optim: "paged_adamw_32bit"
   # 混合精度设置 (50系列显卡完美支持 bf16，比 fp16 更稳定)
@@ -58,3 +74,15 @@ training:
   bf16: true
   # 预热比例
   warmup_ratio: 0.03
+  # 报告到 TensorBoard (True/False)
+  report_to: "tensorboard"
+  # TensorBoard 日志目录
+  logging_dir: "./output/logs"
+  # GPU 监控设置
+  gpu_monitor:
+    # 是否启用 GPU 监控
+    enabled: true
+    # 打印 GPU 状态的间隔（步数）
+    log_interval: 10
+    # 是否将 GPU 指标记录到 TensorBoard
+    enable_tensorboard: true
