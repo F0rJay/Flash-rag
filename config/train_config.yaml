@@ -1,0 +1,60 @@
+# ==========================================
+# Flash-RAG 训练配置文件
+# 适用硬件: NVIDIA RTX 5090 (24GB+)
+# ==========================================
+
+model:
+  # 基础模型路径 (可以是 huggingface ID 或本地绝对路径)
+  name: "hfl/llama-3-chinese-8b-instruct-v3"
+  # 训练后保存的新模型名称
+  new_name: "llama3-law-assistant-lora"
+  # 最大上下文长度 (5090显存大，可以尝试 2048 或 4096)
+  max_seq_length: 2048
+
+data:
+  # 训练数据路径
+  path: "data/train.jsonl"
+
+quantization:
+  # 是否启用 4-bit 量化 (True/False)
+  # 5090 虽然显存大，但量化能极大提升 Batch Size，建议开启
+  load_in_4bit: true
+
+lora:
+  # LoRA 的秩 (Rank)。值越大，参数越多，拟合能力越强，显存占用越高
+  # 5090 显存充足，这里设置为 64 (普通显卡通常设 8 或 16)
+  r: 64
+  # LoRA 缩放因子，通常是 r 的 2 倍
+  lora_alpha: 128
+  lora_dropout: 0.05
+  # 需要微调的模块 (全量线性层微调效果最好)
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+training:
+  output_dir: "./output"
+  # 训练轮数
+  num_train_epochs: 3
+  # 单卡批次大小 (5090 + 4bit量化，可以尝试 8, 16 甚至更高)
+  per_device_train_batch_size: 8
+  # 梯度累积步数 (如果显存不够，增大这个值，减小 batch_size)
+  gradient_accumulation_steps: 1
+  # 学习率
+  learning_rate: 2.0e-4
+  # 日志打印频率
+  logging_steps: 5
+  # 模型保存频率
+  save_steps: 50
+  # 优化器
+  optim: "paged_adamw_32bit"
+  # 混合精度设置 (50系列显卡完美支持 bf16，比 fp16 更稳定)
+  fp16: false
+  bf16: true
+  # 预热比例
+  warmup_ratio: 0.03
