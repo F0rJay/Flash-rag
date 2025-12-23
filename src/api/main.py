@@ -3,20 +3,24 @@ import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import json
 from langchain_community.vectorstores import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_classic.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Iterator
 
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from src.core.CustomVLLM import CustomVLLM
+from src.core.query_rewriter import QueryRewriter, create_query_rewriter
+from src.core.reranker import Reranker, create_reranker
 
 # 配置
 LAW_DB_DIR = str(project_root / "chroma_db")  # 法条型知识库
@@ -29,6 +33,24 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 app = FastAPI()
 llm = CustomVLLM() # 连接到你的 vLLM 服务
 embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+
+# 初始化 RAG 优化组件
+query_rewriter = None
+reranker = None
+
+# 初始化 Query Rewriter（查询改写）
+try:
+    query_rewriter = create_query_rewriter(llm=llm)
+    print("✅ Query Rewriter 已初始化")
+except Exception as e:
+    print(f"⚠️  Query Rewriter 初始化失败: {e}，将跳过查询改写步骤")
+
+# 初始化 Reranker（重排序）
+try:
+    reranker = create_reranker(model_name="BAAI/bge-reranker-base")
+    print("✅ Reranker 已初始化")
+except Exception as e:
+    print(f"⚠️  Reranker 初始化失败: {e}，将跳过重排序步骤")
 
 # 初始化多个知识库（法条型 + 案例型 + 判决书型）
 law_vectordb: Optional[Chroma] = None
@@ -137,53 +159,185 @@ rag_chain = RetrievalQA.from_chain_type(
 # 定义 API 请求体
 class ChatRequest(BaseModel):
     query: str
+    temperature: float = 0.1
+    max_tokens: int = 1024
+    stream: bool = False  # 是否启用流式输出
 
 # 定义 API 接口
 @app.post("/api/rag/chat")
 async def chat_endpoint(request: ChatRequest):
-    """RAG 聊天接口，查询法律知识库并返回结果（支持混合检索）"""
+    """
+    RAG 聊天接口，完整的检索增强生成流程：
+    1. Query Rewrite: 改写用户问题为专业检索关键词
+    2. Retrieve: 向量检索获取 Top 50 文档
+    3. Rerank: 使用 Cross-Encoder 重排序到 Top 5
+    4. Generate: LLM 生成最终答案
+    """
     print(f"📥 收到查询: {request.query}")
     
     if not retriever:
         return {"response": "❌ 错误: 知识库未加载，请先运行 ingest.py 构建知识库"}
     
+    # === 步骤 1: Query Rewrite (查询改写) ===
+    search_query = request.query
+    if query_rewriter:
+        try:
+            search_query = query_rewriter.rewrite(request.query)
+            print(f"📝 查询已改写: '{request.query}' -> '{search_query}'")
+        except Exception as e:
+            print(f"⚠️  查询改写失败，使用原查询: {e}")
+            search_query = request.query
+    else:
+        search_query = request.query
+    
+    # === 步骤 2: Retrieve (向量检索) ===
     # 如果多个知识库都存在，使用混合检索
     available_retrievers = []
     if law_retriever:
-        available_retrievers.append(("法条", law_retriever, 2))
+        available_retrievers.append(("法条", law_retriever, 50))  # 先取 Top 50
     if case_retriever:
-        available_retrievers.append(("案例", case_retriever, 1))
+        available_retrievers.append(("案例", case_retriever, 50))
     if judgement_retriever:
-        available_retrievers.append(("判决书", judgement_retriever, 1))
+        available_retrievers.append(("判决书", judgement_retriever, 50))
+    
+    all_docs = []
+    retrieval_info = []
     
     if len(available_retrievers) >= 2:
+        # 多知识库混合检索
         try:
-            # 从多个知识库分别检索
-            all_docs = []
-            retrieval_info = []
-            
             for name, ret, k in available_retrievers:
-                docs = ret.get_relevant_documents(request.query)
+                docs = ret.get_relevant_documents(search_query)
                 all_docs.extend(docs[:k])
                 retrieval_info.append(f"{name}: {len(docs)}")
-            
-            # 手动构建上下文
-            context = "\n\n".join([doc.page_content for doc in all_docs])
-            
-            # 使用提示词模板生成回答
-            prompt = RAG_PROMPT.format(context=context, question=request.query)
-            response = llm.invoke(prompt)
-            
-            print(f"✅ 混合检索完成（{', '.join(retrieval_info)}）")
-            return {"response": response}
+            print(f"🔍 向量检索完成（{', '.join(retrieval_info)}），共 {len(all_docs)} 个文档")
         except Exception as e:
             print(f"❌ 混合检索失败: {e}")
-            # 降级到单个知识库检索
-            pass
+            return {"response": f"❌ 检索失败: {str(e)}"}
+    else:
+        # 单个知识库检索
+        try:
+            if available_retrievers:
+                name, ret, k = available_retrievers[0]
+                docs = ret.get_relevant_documents(search_query)
+                all_docs = docs[:k]
+                retrieval_info.append(f"{name}: {len(docs)}")
+                print(f"🔍 向量检索完成，共 {len(all_docs)} 个文档")
+            else:
+                # 降级到标准 RAG 链
+                try:
+                    result = rag_chain.invoke(request.query)
+                    return {"response": result['result']}
+                except Exception as e:
+                    return {"response": f"❌ 检索失败: {str(e)}"}
+        except Exception as e:
+            print(f"❌ 检索失败: {e}")
+            return {"response": f"❌ 检索失败: {str(e)}"}
     
-    # 单个知识库，使用标准 RAG 链
+    if not all_docs:
+        return {"response": "❌ 未检索到相关文档，请尝试其他问题"}
+    
+    # === 步骤 3: Rerank (重排序) ===
+    # 将文档转换为字符串列表用于重排序
+    doc_contents = [doc.page_content for doc in all_docs]
+    doc_metadata = [{"page_content": doc.page_content, "metadata": doc.metadata} for doc in all_docs]
+    
+    if reranker and len(doc_contents) > 5:
+        try:
+            # 使用重排序器对文档进行精细排序
+            reranked_docs = reranker.rerank_with_metadata(
+                query=request.query,  # 使用原始查询进行重排序
+                documents_with_metadata=doc_metadata,
+                top_k=5
+            )
+            print(f"🎯 重排序完成，从 {len(doc_contents)} 个文档中选出 Top 5")
+            # 提取重排序后的文档内容
+            final_docs = [doc['page_content'] for doc in reranked_docs]
+        except Exception as e:
+            print(f"⚠️  重排序失败，使用原始检索结果: {e}")
+            # 重排序失败，使用原始 Top 5
+            final_docs = doc_contents[:5]
+    else:
+        # 如果没有重排序器或文档数量较少，直接取 Top 5
+        final_docs = doc_contents[:5]
+        if reranker:
+            print(f"ℹ️  文档数量较少（{len(doc_contents)}），跳过重排序")
+    
+    # === 步骤 4: Generate (生成答案) ===
     try:
-        result = rag_chain.invoke(request.query)
-        return {"response": result['result']}
+        # 构建上下文
+        context = "\n\n".join([f"[文档 {i+1}]\n{doc}" for i, doc in enumerate(final_docs)])
+        
+        # 使用提示词模板生成回答
+        prompt = RAG_PROMPT.format(context=context, question=request.query)
+        
+        # 如果启用流式输出
+        if request.stream:
+            return StreamingResponse(
+                _stream_response(
+                    llm=llm,
+                    prompt=prompt,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    sources=final_docs
+                ),
+                media_type="text/event-stream"
+            )
+        else:
+            # 非流式输出
+            response = llm.invoke(prompt)
+            
+            print(f"✅ RAG 流程完成: 改写 → 检索({len(all_docs)}) → 重排序({len(final_docs)}) → 生成")
+            return {
+                "response": response,
+                "sources": [
+                    {"content": doc[:200] + "..." if len(doc) > 200 else doc, "index": i+1}
+                    for i, doc in enumerate(final_docs)
+                ]
+            }
     except Exception as e:
-        return {"response": f"❌ 检索失败: {str(e)}"}
+        print(f"❌ 生成失败: {e}")
+        if request.stream:
+            # 流式输出错误
+            def error_stream():
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            return StreamingResponse(error_stream(), media_type="text/event-stream")
+        else:
+            return {"response": f"❌ 生成失败: {str(e)}", "sources": []}
+
+
+def _stream_response(
+    llm: CustomVLLM,
+    prompt: str,
+    temperature: float = 0.1,
+    max_tokens: int = 1024,
+    sources: List[str] = None
+) -> Iterator[str]:
+    """
+    流式响应生成器
+    
+    Args:
+        llm: CustomVLLM 实例
+        prompt: 提示词
+        temperature: 温度参数
+        max_tokens: 最大 token 数
+        sources: 检索到的文档列表
+        
+    Yields:
+        str: SSE 格式的数据流
+    """
+    # 发送开始信号
+    yield f"data: {json.dumps({'type': 'start'})}\n\n"
+    
+    # 流式生成
+    full_response = ""
+    try:
+        for chunk in llm.stream(prompt, temperature=temperature, max_tokens=max_tokens):
+            full_response += chunk
+            # 发送文本块
+            yield f"data: {json.dumps({'type': 'chunk', 'text': chunk})}\n\n"
+        
+        # 发送结束信号和来源信息
+        yield f"data: {json.dumps({'type': 'done', 'sources': sources or []})}\n\n"
+    except Exception as e:
+        yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
