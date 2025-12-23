@@ -1,19 +1,84 @@
-# 4bit量化
-pip install -i http://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com bitsandbytes  
+# ============================================
+# Flash-RAG 项目依赖文件
+# ============================================
+# 安装方式: pip install -r requirements.txt
+# 使用国内镜像: pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+# ============================================
 
-pip install vllm
-# RAG核心依赖
-# 安装 FastAPI 和 Uvicorn
-pip install fastapi uvicorn
+# ============================================
+# 1. 深度学习框架
+# ============================================
+torch>=2.0.0                    # PyTorch 深度学习框架（训练和推理的基础）
+transformers>=4.30.0            # HuggingFace Transformers（模型加载和训练）
 
-# 安装 LangChain 及其核心组件
-# pydantic 用于数据校验
-pip install langchain langchain-community pydantic
+# ============================================
+# 2. 模型训练相关
+# ============================================
+datasets>=2.0.0                 # HuggingFace Datasets（数据集加载和处理）
+peft>=0.6.0                     # Parameter-Efficient Fine-Tuning（LoRA 适配器）
+trl>=0.7.0                      # Transformer Reinforcement Learning（SFTTrainer）
+bitsandbytes>=0.41.0            # 4-bit 量化支持（降低显存占用）
 
-# 安装向量数据库 (Vector DB) - 我们使用 ChromaDB (轻量级且易于集成)
-pip install chromadb
+# ============================================
+# 3. 推理引擎
+# ============================================
+vllm>=0.3.0                     # vLLM 高性能推理引擎（PagedAttention）
 
-# 安装 HuggingFace embedding 模型 (用于将文本转换为向量)
-pip install sentence-transformers
+# ============================================
+# 4. API 服务框架
+# ============================================
+fastapi>=0.100.0                # FastAPI Web 框架（异步 API 服务）
+uvicorn[standard]>=0.23.0       # ASGI 服务器（运行 FastAPI）
+pydantic>=2.0.0                 # 数据验证和设置管理（FastAPI 依赖）
 
-pip install -i http://mirrors.aliyun.com/pypi/simple --trusted-host mirrors.aliyun.com langchain-community langchain-huggingface
+# ============================================
+# 5. LangChain 生态系统
+# ============================================
+langchain>=0.1.0                # LangChain 核心库
+langchain-core>=0.1.0           # LangChain 核心组件（BaseLLM, PromptTemplate）
+langchain-community>=0.0.20     # LangChain 社区集成（Chroma, TextLoader）
+langchain-classic>=1.0.0        # LangChain 经典 API（RetrievalQA）
+langchain-huggingface>=0.0.1    # HuggingFace 集成（HuggingFaceEmbeddings）
+langchain-text-splitters>=0.0.1 # 文本分割器（RecursiveCharacterTextSplitter）
+
+# ============================================
+# 6. 向量数据库
+# ============================================
+chromadb>=0.4.0                 # ChromaDB 向量数据库（RAG 知识库存储）
+
+# ============================================
+# 7. Embedding 模型
+# ============================================
+sentence-transformers>=2.2.0    # Sentence Transformers（文本向量化）
+
+# ============================================
+# 8. 前端框架（可选）
+# ============================================
+streamlit>=1.28.0               # Streamlit Web 应用框架（前端界面）
+
+# ============================================
+# 9. 工具库
+# ============================================
+requests>=2.31.0                # HTTP 请求库（API 调用）
+pyyaml>=6.0                     # YAML 解析库（配置文件读取）
+
+# ============================================
+# 10. 开发工具（可选，用于开发环境）
+# ============================================
+# jupyter>=1.0.0                # Jupyter Notebook（可选，用于实验）
+# ipython>=8.0.0                 # IPython 交互式 shell（可选）
+
+# ============================================
+# 安装说明
+# ============================================
+# 1. 基础安装（推荐使用国内镜像）:
+#    pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
+#
+# 2. 如果遇到 bitsandbytes 安装问题（CUDA 相关）:
+#    pip install -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn bitsandbytes
+#
+# 3. vLLM 可能需要单独安装（根据 CUDA 版本）:
+#    pip install vllm
+#
+# 4. 验证安装:
+#    python -c "import torch; import transformers; import vllm; print('✅ 核心依赖安装成功')"
