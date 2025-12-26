@@ -92,6 +92,29 @@ else:
 logging_dir = cfg['training'].get('logging_dir', os.path.join(cfg['training']['output_dir'], 'logs'))
 os.makedirs(logging_dir, exist_ok=True)
 
+# 获取评估和保存参数
+eval_steps = cfg['training'].get('eval_steps', 0)
+save_steps = cfg['training']['save_steps']
+load_best_model_at_end = cfg['training'].get('load_best_model_at_end', False)
+do_eval = cfg['training'].get('do_eval', False) and eval_dataset is not None
+eval_strategy = cfg['training'].get('eval_strategy', cfg['training'].get('evaluation_strategy', 'no'))
+
+# 如果启用 load_best_model_at_end 且使用 steps 评估策略，需要确保 save_steps 是 eval_steps 的倍数
+if load_best_model_at_end and do_eval and eval_strategy == 'steps' and eval_steps > 0:
+    if save_steps % eval_steps != 0:
+        # 自动调整 save_steps 为 eval_steps 的倍数
+        if save_steps < eval_steps:
+            # 如果 save_steps 小于 eval_steps，调整为 eval_steps
+            adjusted_save_steps = eval_steps
+        else:
+            # 如果 save_steps 大于 eval_steps，调整为最接近的倍数（向下取整）
+            adjusted_save_steps = (save_steps // eval_steps) * eval_steps
+            if adjusted_save_steps == 0:
+                adjusted_save_steps = eval_steps
+        
+        print(f"⚠️  自动调整 save_steps: {save_steps} -> {adjusted_save_steps} (必须是 eval_steps={eval_steps} 的倍数)")
+        save_steps = adjusted_save_steps
+
 training_args = TrainingArguments(
     output_dir=cfg['training']['output_dir'],
     num_train_epochs=cfg['training']['num_train_epochs'],
@@ -99,12 +122,12 @@ training_args = TrainingArguments(
     per_device_eval_batch_size=cfg['training'].get('per_device_eval_batch_size', cfg['training']['per_device_train_batch_size']),
     gradient_accumulation_steps=cfg['training']['gradient_accumulation_steps'],
     optim=cfg['training']['optim'],
-    save_steps=cfg['training']['save_steps'],
+    save_steps=save_steps,
     logging_steps=cfg['training']['logging_steps'],
-    eval_steps=cfg['training'].get('eval_steps', 0),
-    do_eval=cfg['training'].get('do_eval', False) and eval_dataset is not None,
-    evaluation_strategy=cfg['training'].get('evaluation_strategy', 'no'),
-    load_best_model_at_end=cfg['training'].get('load_best_model_at_end', False),
+    eval_steps=eval_steps,
+    do_eval=do_eval,
+    eval_strategy=eval_strategy,
+    load_best_model_at_end=load_best_model_at_end,
     metric_for_best_model=cfg['training'].get('metric_for_best_model', 'eval_loss'),
     greater_is_better=cfg['training'].get('metric_for_best_model', 'eval_loss') != 'eval_loss',
     learning_rate=float(cfg['training']['learning_rate']),
@@ -115,6 +138,8 @@ training_args = TrainingArguments(
     warmup_ratio=cfg['training']['warmup_ratio'],
     group_by_length=True,
     lr_scheduler_type="constant",
+    # 显存优化：启用梯度检查点（以时间换显存）
+    gradient_checkpointing=cfg['training'].get('gradient_checkpointing', True),
     # 可视化设置
     report_to=cfg['training'].get('report_to', 'tensorboard'),
     logging_dir=logging_dir,
@@ -123,7 +148,15 @@ training_args = TrainingArguments(
     logging_first_step=True,
 )
 
-# === 6. 初始化 SFTTrainer 中的自定义数据格式化函数 ===
+# === 6. 启用梯度检查点（如果配置了）===
+if cfg['training'].get('gradient_checkpointing', True):
+    if hasattr(model, 'gradient_checkpointing_enable'):
+        model.gradient_checkpointing_enable()
+        print("✅ 已启用梯度检查点（节省显存，训练速度会稍慢）")
+    else:
+        print("⚠️  模型不支持梯度检查点")
+
+# === 7. 初始化 SFTTrainer 中的自定义数据格式化函数 ===
 def formatting_prompts_func(example):
     # 确保 'input' 字段存在，即使是空字符串
     input_text = example.get('input', '')

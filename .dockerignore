@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 模型输出和缓存（不包含在镜像中，通过 volume 挂载）
+output/
+chroma_db/
+chroma_db_case/
+chroma_db_judgement/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# 环境变量
+.env
+.venv
+env/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+logs/
+
+# Git
+.git/
+.gitignore
+
+# 临时文件
+*.tmp
+*.temp
+.DS_Store
+
+# 大型数据文件（通过 volume 挂载）
+data/datasets/*.jsonl
+data/docs/*.txt
+
+# 报告文件
+reports/
+
+# Docker
+docker-compose.yml
+Dockerfile
+.dockerignore
+

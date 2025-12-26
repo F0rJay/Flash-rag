@@ -1,0 +1,38 @@
+# Docker Compose 覆盖配置示例
+# 复制此文件为 docker-compose.override.yml 来自定义配置
+# docker-compose.override.yml 会被自动加载，不需要在命令中指定
+
+version: '3.8'
+
+services:
+  vllm-service:
+    # 自定义端口映射
+    ports:
+      - "8000:8000"
+    
+    # 自定义环境变量
+    environment:
+      - GPU_MEMORY_UTILIZATION=0.9  # 提高显存使用率
+      - MAX_NUM_SEQS=256  # 增加并发数
+    
+    # 自定义资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 24G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  app-service:
+    # 自定义端口映射
+    ports:
+      - "8080:8080"
+      - "8501:8501"
+    
+    # 自定义环境变量
+    environment:
+      - VLLM_URL=http://vllm-service:8000
+

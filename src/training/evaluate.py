@@ -26,6 +26,7 @@ from transformers import (
 )
 from peft import PeftModel
 import os
+from tqdm import tqdm
 
 # 评估指标
 try:
@@ -40,10 +41,15 @@ try:
     from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
     from nltk.tokenize import word_tokenize
     import nltk
+    # 下载所需的 NLTK 资源
     try:
         nltk.data.find('tokenizers/punkt')
     except LookupError:
         nltk.download('punkt', quiet=True)
+    try:
+        nltk.data.find('tokenizers/punkt_tab')
+    except LookupError:
+        nltk.download('punkt_tab', quiet=True)
     BLEU_AVAILABLE = True
 except ImportError:
     BLEU_AVAILABLE = False
@@ -104,19 +110,20 @@ def format_prompt(instruction, input_text=""):
     """格式化提示词（与训练时一致）"""
     return f"<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\n{instruction}\n{input_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
 
-def generate_response(model, tokenizer, prompt, max_length=512, temperature=0.7):
+def generate_response(model, tokenizer, prompt, max_length=256, temperature=0.7):
     """生成回答"""
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=max_length,
+            max_new_tokens=max_length,  # 限制生成长度以加快速度
             temperature=temperature,
             do_sample=True,
             top_p=0.9,
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
+            repetition_penalty=1.1,  # 减少重复，加快生成
         )
     
     # 解码输出
@@ -132,7 +139,7 @@ def generate_response(model, tokenizer, prompt, max_length=512, temperature=0.7)
     
     return assistant_response
 
-def calculate_perplexity(model, tokenizer, texts):
+def calculate_perplexity(model, tokenizer, texts, progress_bar=None):
     """计算困惑度"""
     model.eval()
     total_loss = 0
@@ -147,31 +154,58 @@ def calculate_perplexity(model, tokenizer, texts):
             loss = outputs.loss
             total_loss += loss.item() * labels.numel()
             total_tokens += labels.numel()
+            
+            if progress_bar:
+                progress_bar.update(1)
     
     avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
     perplexity = np.exp(avg_loss)
     return perplexity
 
-def calculate_bleu(references, predictions):
+def calculate_bleu(references, predictions, progress_bar=None):
     """计算 BLEU 分数"""
     if not BLEU_AVAILABLE:
         return None
+    
+    # 确保 NLTK 资源已下载
+    try:
+        import nltk
+        try:
+            nltk.data.find('tokenizers/punkt_tab')
+        except LookupError:
+            nltk.download('punkt_tab', quiet=True)
+    except:
+        pass
     
     smoothing = SmoothingFunction().method1
     bleu_scores = []
     
     for ref, pred in zip(references, predictions):
-        ref_tokens = word_tokenize(ref.lower())
-        pred_tokens = word_tokenize(pred.lower())
-        score = sentence_bleu([ref_tokens], pred_tokens, smoothing_function=smoothing)
-        bleu_scores.append(score)
+        try:
+            ref_tokens = word_tokenize(ref.lower())
+            pred_tokens = word_tokenize(pred.lower())
+            score = sentence_bleu([ref_tokens], pred_tokens, smoothing_function=smoothing)
+            bleu_scores.append(score)
+        except Exception as e:
+            # 如果分词失败，跳过该样本
+            if progress_bar:
+                progress_bar.write(f"⚠️  BLEU 计算跳过样本（分词失败）: {str(e)[:50]}")
+            else:
+                print(f"   ⚠️  BLEU 计算跳过样本（分词失败）: {str(e)[:50]}")
+            continue
+        
+        if progress_bar:
+            progress_bar.update(1)
+    
+    if not bleu_scores:
+        return None
     
     return {
         'bleu_1': np.mean(bleu_scores),
         'bleu_avg': np.mean(bleu_scores)
     }
 
-def calculate_rouge(references, predictions):
+def calculate_rouge(references, predictions, progress_bar=None):
     """计算 ROUGE 分数"""
     if not ROUGE_AVAILABLE:
         return None
@@ -184,6 +218,9 @@ def calculate_rouge(references, predictions):
         rouge_scores['rouge1'].append(scores['rouge1'].fmeasure)
         rouge_scores['rouge2'].append(scores['rouge2'].fmeasure)
         rouge_scores['rougeL'].append(scores['rougeL'].fmeasure)
+        
+        if progress_bar:
+            progress_bar.update(1)
     
     return {
         'rouge1': np.mean(rouge_scores['rouge1']),
@@ -204,26 +241,41 @@ def evaluate_model(model, tokenizer, test_dataset, config, max_samples=None):
     all_texts = []  # 用于计算困惑度
     
     print("\n🔄 生成预测...")
-    for idx, example in enumerate(test_dataset):
-        if (idx + 1) % 100 == 0:
-            print(f"   进度: {idx + 1}/{len(test_dataset)}")
-        
-        instruction = example.get('instruction', '')
-        input_text = example.get('input', '')
-        reference = example.get('output', '')
-        
-        # 格式化提示词
-        prompt = format_prompt(instruction, input_text)
-        
-        # 生成回答
-        prediction = generate_response(model, tokenizer, prompt)
-        
-        references.append(reference)
-        predictions.append(prediction)
-        
-        # 用于困惑度计算
-        full_text = prompt + reference
-        all_texts.append(full_text)
+    print(f"   总样本数: {len(test_dataset)}")
+    
+    # 使用 tqdm 显示进度条
+    with tqdm(total=len(test_dataset), desc="生成预测", unit="样本", ncols=100) as pbar:
+        for idx, example in enumerate(test_dataset):
+            instruction = example.get('instruction', '')
+            input_text = example.get('input', '')
+            reference = example.get('output', '')
+            
+            # 格式化提示词
+            prompt = format_prompt(instruction, input_text)
+            
+            # 生成回答（限制长度以加快速度）
+            try:
+                prediction = generate_response(model, tokenizer, prompt, max_length=256)
+            except Exception as e:
+                pbar.write(f"⚠️  样本 {idx + 1} 生成失败: {e}")
+                prediction = ""  # 使用空字符串作为占位符
+            
+            references.append(reference)
+            predictions.append(prediction)
+            
+            # 用于困惑度计算
+            full_text = prompt + reference
+            all_texts.append(full_text)
+            
+            # 更新进度条
+            pbar.update(1)
+            
+            # 每 10 个样本更新一次描述（显示当前进度百分比）
+            if (idx + 1) % 10 == 0:
+                pbar.set_postfix({
+                    '进度': f"{(idx+1)/len(test_dataset)*100:.1f}%",
+                    '成功': f"{len([p for p in predictions if p])}/{idx+1}"
+                })
     
     print("\n📈 计算评估指标...")
     

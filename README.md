@@ -108,6 +108,10 @@ LegalFlash-RAG/
 
 ## 快速开始
 
+> 📖 **完整使用手册**：如果你是第一次使用本项目，强烈建议先阅读 [完整使用手册](docs/USER_GUIDE.md)，里面包含从模型训练到 Docker 部署的详细步骤说明。
+
+### 🚀 快速开始
+
 ### 1. 环境准备
 
 ```bash
@@ -396,7 +400,50 @@ ls output/
 
 ### 5. 启动服务
 
-#### 启动 vLLM 推理服务（终端 1）
+#### 方式 1: Docker Compose 部署（推荐，生产环境）
+
+**前置要求：**
+- Docker 和 Docker Compose 已安装
+- NVIDIA Docker 支持（GPU 推理需要）
+
+**在 Autodl 实例中部署：**
+
+Autodl 实例支持 Docker，但可能需要先安装。详细安装步骤请参考 `docs/DOCKER_DEPLOYMENT.md`。
+
+```bash
+# 启动所有服务（一键启动）
+bash scripts/docker-start.sh
+
+# 或手动启动
+docker-compose up -d
+
+# 查看服务状态
+docker-compose ps
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+bash scripts/docker-stop.sh
+# 或
+docker-compose down
+```
+
+**服务地址：**
+- vLLM API: `http://localhost:8000`
+- FastAPI: `http://localhost:8080`
+- Streamlit: `http://localhost:8501`
+
+**优势：**
+- ✅ 微服务架构，服务隔离
+- ✅ 一键启动，无需手动管理多个进程
+- ✅ 自动健康检查和重启
+- ✅ 资源隔离和限制
+- ✅ 易于扩展和部署
+
+#### 方式 2: 手动启动（开发环境）
+
+**启动 vLLM 推理服务（终端 1）：**
 
 ```bash
 bash scripts/vllm.sh
@@ -409,7 +456,7 @@ bash scripts/vllm.sh
 bash scripts/check_vllm.sh
 ```
 
-#### 启动 FastAPI RAG 服务（终端 2）
+**启动 FastAPI RAG 服务（终端 2）：**
 
 ```bash
 bash scripts/fastapi.sh
@@ -801,9 +848,83 @@ async def chat_endpoint(request: ChatRequest):
 
 ### Phase 4: 生产交付 (Production & Ops)
 
-**任务：** 证明系统稳健，用数据说话。
+**任务：** 工程化封装，微服务架构部署。
 
-**技术栈：** Docker, Locust (压测), Prometheus + Grafana
+**技术栈：** Docker, Docker Compose, 微服务架构
+
+#### 微服务架构
+
+项目采用标准的微服务架构，通过 Docker Compose 编排为两个核心服务：
+
+**1. vLLM 服务 (vllm-service)**
+- 专门负责模型推理计算
+- 提供 OpenAI 兼容的 API 接口
+- 独立 GPU 资源管理
+- 端口：8000
+
+**2. App 服务 (app-service)**
+- FastAPI：RAG 业务逻辑（Query Rewrite → Retrieve → Rerank → Generate）
+- Streamlit：前端界面
+- 端口：8080 (FastAPI), 8501 (Streamlit)
+
+#### Docker 部署
+
+**前置要求：**
+- Docker 和 Docker Compose 已安装
+- NVIDIA Docker 支持（GPU 推理需要）
+- 模型已训练并合并（`output/llama3-law-merged`）
+
+**在 Autodl 实例中部署：**
+
+Autodl 实例支持 Docker，但可能需要先安装：
+
+```bash
+# 1. 安装 Docker（如果未安装）
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER
+
+# 2. 安装 NVIDIA Docker（GPU 支持）
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
+    sudo tee /etc/apt/sources.list.d/nvidia-docker.list
+sudo apt-get update
+sudo apt-get install -y nvidia-docker2
+sudo systemctl restart docker
+
+# 3. 验证 GPU 支持
+docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
+```
+
+**启动服务：**
+
+```bash
+# 使用启动脚本（推荐）
+bash scripts/docker-start.sh
+
+# 或手动启动
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+bash scripts/docker-stop.sh
+# 或
+docker-compose down
+```
+
+**服务地址：**
+- vLLM API: `http://localhost:8000`
+- FastAPI: `http://localhost:8080`
+- Streamlit: `http://localhost:8501`
+
+**自定义配置：**
+
+复制 `docker-compose.override.yml.example` 为 `docker-compose.override.yml` 来自定义配置：
+- 端口映射
+- 环境变量
+- 资源限制
 
 #### 监控重点
 
@@ -812,19 +933,147 @@ async def chat_endpoint(request: ChatRequest):
 | **gpu_cache_usage** | KV Cache 使用率 | 如果长期高于 95%，说明需要加卡或优化模型长度 |
 | **request_latency** | 请求延迟 | P50 < 200ms, P99 < 1s |
 | **throughput** | 吞吐量 | 根据业务需求设定 |
+| **container_health** | 容器健康状态 | 所有容器应保持 healthy |
+
+#### 健康检查
+
+**Docker 容器健康检查：**
+
+```bash
+# 检查容器状态
+docker-compose ps
+
+# 检查健康检查日志
+docker inspect legalflash-rag-vllm | grep -A 10 Health
+docker inspect legalflash-rag-app | grep -A 10 Health
+
+# 手动测试健康检查端点
+curl http://localhost:8080/health
+curl http://localhost:8000/health
+```
+
+**增强的健康检查端点 (`/health`)** 会检查：
+- ✅ vLLM 服务连接状态
+- ✅ 知识库加载状态（法条型、案例型、判决书型）
+- ✅ RAG 组件状态（Query Rewriter、Reranker、Embeddings、LLM）
+
+#### 监控指标
+
+**获取监控指标：**
+
+```bash
+# 获取完整监控指标（JSON 格式）
+curl http://localhost:8080/metrics | jq
+
+# 获取 Prometheus 格式指标
+curl http://localhost:8080/metrics/prometheus
+```
+
+**监控指标包括：**
+- **请求统计**: 总请求数、错误数、成功率
+- **延迟统计**: 平均延迟、P50/P95/P99 延迟
+- **吞吐量**: 1分钟/5分钟/15分钟 RPS（请求数/秒）
+- **GPU 指标**: 显存使用率、GPU 利用率、温度、功耗
+- **CPU 指标**: CPU 使用率、内存使用情况
+- **vLLM 状态**: vLLM 服务健康状态和响应时间
+
+**监控指标示例：**
+
+```json
+{
+  "timestamp": "2024-01-01T12:00:00",
+  "uptime_seconds": 3600,
+  "requests": {
+    "total": 1000,
+    "errors": 5,
+    "success_rate": 99.5
+  },
+  "latency": {
+    "avg": 0.25,
+    "p50": 0.20,
+    "p95": 0.50,
+    "p99": 0.80
+  },
+  "throughput": {
+    "requests_per_second_1min": 10.5,
+    "requests_per_second_5min": 9.8,
+    "requests_per_second_15min": 9.2
+  },
+  "gpu": [
+    {
+      "index": 0,
+      "name": "NVIDIA A100",
+      "memory": {
+        "used_gb": 40.5,
+        "total_gb": 80.0,
+        "utilization_percent": 50.6
+      },
+      "utilization_percent": 85
+    }
+  ]
+}
+```
+
+#### 压测
+
+**使用 Locust 进行负载测试：**
+
+```bash
+# 方式 1: 使用脚本（推荐）
+bash scripts/run_load_test.sh
+
+# 方式 2: 手动启动 Locust Web UI
+locust -f tests/locustfile.py --host=http://localhost:8080
+# 然后在浏览器打开 http://localhost:8089 进行压测
+
+# 方式 3: 无头模式（命令行）
+locust -f tests/locustfile.py \
+    --host=http://localhost:8080 \
+    --users=50 \
+    --spawn-rate=5 \
+    --run-time=5m \
+    --headless \
+    --html=reports/locust_report.html
+```
+
+**压测配置参数：**
+- `--users`: 并发用户数（默认 10）
+- `--spawn-rate`: 用户增长速率/秒（默认 2）
+- `--run-time`: 持续时间（如 `5m`, `1h`）
+- `--headless`: 无头模式（不启动 Web UI）
+- `--html`: 生成 HTML 报告
+
+**压测场景：**
+- ✅ 聊天接口测试（非流式）
+- ✅ 流式聊天接口测试
+- ✅ 健康检查接口测试（高频）
+- ✅ 监控指标接口测试
+- ✅ 压力测试（高并发场景）
+
+**压测报告：**
+- HTML 报告：`reports/locust_report.html`
+- CSV 统计：`reports/locust_stats.csv`
 
 #### 部署检查清单
 
-- [ ] 模型权重已合并（非 LoRA Adapter）
-- [ ] vLLM 服务正常启动，无 OOM 错误
-- [ ] FastAPI 接口支持异步和流式输出
-- [ ] RAG 链路完整（Rewrite → Retrieve → Rerank → Generate）
-- [ ] 监控指标已配置（GPU 使用率、延迟、吞吐量）
-- [ ] 压测通过（使用 Locust 进行负载测试）
+- [x] 模型权重已合并（非 LoRA Adapter）
+- [x] vLLM 服务正常启动，无 OOM 错误
+- [x] FastAPI 接口支持异步和流式输出
+- [x] RAG 链路完整（Rewrite → Retrieve → Rerank → Generate）
+- [x] Docker 容器健康检查通过（`docker-compose ps` 显示 healthy）
+- [x] 监控指标已配置（访问 `/metrics` 端点查看 GPU、延迟、吞吐量）
+- [x] 压测通过（使用 Locust 进行负载测试，P95 延迟 < 1s）
 
 ---
 
 ## 📚 相关资源
+
+### 📖 项目文档
+
+- **[完整使用手册](docs/USER_GUIDE.md)** - 从模型训练到 Docker 部署的详细步骤（推荐新手阅读）
+- [Docker 部署指南](docs/DOCKER_DEPLOYMENT.md) - Docker Compose 部署详细说明
+
+### 🔗 外部资源
 
 - [vLLM 官方文档](https://docs.vllm.ai/)
 - [LangChain 文档](https://python.langchain.com/)

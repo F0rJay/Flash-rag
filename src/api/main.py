@@ -13,6 +13,7 @@ from langchain_core.prompts import PromptTemplate
 import sys
 from pathlib import Path
 from typing import Optional, List, Iterator
+from datetime import datetime
 
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent.parent
@@ -21,6 +22,8 @@ sys.path.insert(0, str(project_root))
 from src.core.CustomVLLM import CustomVLLM
 from src.core.query_rewriter import QueryRewriter, create_query_rewriter
 from src.core.reranker import Reranker, create_reranker
+from src.api.monitoring import get_metrics_collector
+import time
 
 # 配置
 LAW_DB_DIR = str(project_root / "chroma_db")  # 法条型知识库
@@ -28,11 +31,15 @@ CASE_DB_DIR = str(project_root / "chroma_db_case")  # 案例型知识库
 JUDGEMENT_DB_DIR = str(project_root / "chroma_db_judgement")  # 判决书型知识库
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 # LLM 服务的端口是 8000，CustomVLLM 默认指向这个地址
+VLLM_URL = os.getenv("VLLM_URL", "http://localhost:8000")
 
 # 初始化 LangChain 组件 (全局加载一次)
 app = FastAPI()
 llm = CustomVLLM() # 连接到你的 vLLM 服务
 embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+
+# 初始化监控指标收集器
+metrics_collector = get_metrics_collector(vllm_url=VLLM_URL)
 
 # 初始化 RAG 优化组件
 query_rewriter = None
@@ -173,9 +180,12 @@ async def chat_endpoint(request: ChatRequest):
     3. Rerank: 使用 Cross-Encoder 重排序到 Top 5
     4. Generate: LLM 生成最终答案
     """
+    start_time = time.time()
     print(f"📥 收到查询: {request.query}")
     
     if not retriever:
+        latency = time.time() - start_time
+        metrics_collector.record_request(latency, success=False)
         return {"response": "❌ 错误: 知识库未加载，请先运行 ingest.py 构建知识库"}
     
     # === 步骤 1: Query Rewrite (查询改写) ===
@@ -279,7 +289,8 @@ async def chat_endpoint(request: ChatRequest):
                     prompt=prompt,
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
-                    sources=final_docs
+                    sources=final_docs,
+                    start_time=start_time
                 ),
                 media_type="text/event-stream"
             )
@@ -311,7 +322,8 @@ def _stream_response(
     prompt: str,
     temperature: float = 0.1,
     max_tokens: int = 1024,
-    sources: List[str] = None
+    sources: List[str] = None,
+    start_time: float = None
 ) -> Iterator[str]:
     """
     流式响应生成器
@@ -322,6 +334,7 @@ def _stream_response(
         temperature: 温度参数
         max_tokens: 最大 token 数
         sources: 检索到的文档列表
+        start_time: 请求开始时间（用于延迟统计）
         
     Yields:
         str: SSE 格式的数据流
@@ -331,6 +344,7 @@ def _stream_response(
     
     # 流式生成
     full_response = ""
+    success = True
     try:
         for chunk in llm.stream(prompt, temperature=temperature, max_tokens=max_tokens):
             full_response += chunk
@@ -340,4 +354,105 @@ def _stream_response(
         # 发送结束信号和来源信息
         yield f"data: {json.dumps({'type': 'done', 'sources': sources or []})}\n\n"
     except Exception as e:
+        success = False
         yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+    finally:
+        # 记录延迟指标（流式输出）
+        if start_time is not None:
+            latency = time.time() - start_time
+            metrics_collector.record_request(latency, success=success)
+
+
+# 健康检查端点（增强版）
+@app.get("/health")
+async def health_check():
+    """
+    增强的健康检查端点
+    检查：vLLM 连接、知识库状态、服务可用性
+    """
+    health_status = {
+        "status": "healthy",
+        "service": "LegalFlash-RAG API",
+        "timestamp": datetime.now().isoformat(),
+        "checks": {}
+    }
+    
+    # 检查 vLLM 服务
+    vllm_health = metrics_collector.check_vllm_health()
+    health_status["checks"]["vllm"] = vllm_health
+    
+    # 检查知识库状态
+    knowledge_bases = {
+        "law": Path(LAW_DB_DIR).exists() and any(Path(LAW_DB_DIR).iterdir()),
+        "case": Path(CASE_DB_DIR).exists() and any(Path(CASE_DB_DIR).iterdir()),
+        "judgement": Path(JUDGEMENT_DB_DIR).exists() and any(Path(JUDGEMENT_DB_DIR).iterdir())
+    }
+    health_status["checks"]["knowledge_bases"] = knowledge_bases
+    health_status["checks"]["available_retrievers"] = sum([
+        law_retriever is not None,
+        case_retriever is not None,
+        judgement_retriever is not None
+    ])
+    
+    # 检查 RAG 组件
+    health_status["checks"]["components"] = {
+        "query_rewriter": query_rewriter is not None,
+        "reranker": reranker is not None,
+        "embeddings": embeddings is not None,
+        "llm": llm is not None
+    }
+    
+    # 如果 vLLM 不可用，标记为不健康
+    if vllm_health["status"] != "healthy":
+        health_status["status"] = "degraded"
+    
+    # 如果没有可用的知识库，标记为不健康
+    if health_status["checks"]["available_retrievers"] == 0:
+        health_status["status"] = "unhealthy"
+    
+    return health_status
+
+
+# 监控指标端点
+@app.get("/metrics")
+async def get_metrics():
+    """
+    获取系统监控指标
+    包括：GPU 使用率、延迟统计、吞吐量、CPU/内存使用情况
+    """
+    return metrics_collector.get_all_metrics()
+
+
+# 监控指标端点（Prometheus 格式，可选）
+@app.get("/metrics/prometheus")
+async def get_prometheus_metrics():
+    """
+    获取 Prometheus 格式的监控指标
+    """
+    metrics = metrics_collector.get_all_metrics()
+    
+    # 转换为 Prometheus 格式
+    prometheus_lines = []
+    
+    # 请求统计
+    prometheus_lines.append(f'legalflash_rag_requests_total {metrics["requests"]["total"]}')
+    prometheus_lines.append(f'legalflash_rag_requests_errors_total {metrics["requests"]["errors"]}')
+    prometheus_lines.append(f'legalflash_rag_requests_success_rate {metrics["requests"]["success_rate"]}')
+    
+    # 延迟统计
+    latency = metrics["latency"]
+    prometheus_lines.append(f'legalflash_rag_latency_avg_seconds {latency["avg"]}')
+    prometheus_lines.append(f'legalflash_rag_latency_p95_seconds {latency["p95"]}')
+    prometheus_lines.append(f'legalflash_rag_latency_p99_seconds {latency["p99"]}')
+    
+    # 吞吐量
+    throughput = metrics["throughput"]
+    prometheus_lines.append(f'legalflash_rag_throughput_rps_1min {throughput["requests_per_second_1min"]}')
+    
+    # GPU 指标
+    for gpu in metrics["gpu"]:
+        idx = gpu["index"]
+        prometheus_lines.append(f'legalflash_rag_gpu_memory_used_gb{{gpu="{idx}"}} {gpu["memory"]["used_gb"]}')
+        prometheus_lines.append(f'legalflash_rag_gpu_utilization_percent{{gpu="{idx}"}} {gpu["utilization_percent"]}')
+    
+    return "\n".join(prometheus_lines)

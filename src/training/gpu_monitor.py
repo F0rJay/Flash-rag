@@ -37,8 +37,12 @@ class GPUMonitorCallback(TrainerCallback):
         self.step_count = 0
         self.writer = None
         
+        # 使用实例变量跟踪 NVML 是否可用
+        self.pynvml_available = PYNVML_AVAILABLE
+        self.handles = []
+        
         # 初始化 NVML（如果可用）
-        if PYNVML_AVAILABLE:
+        if self.pynvml_available:
             try:
                 pynvml.nvmlInit()
                 self.device_count = pynvml.nvmlDeviceGetCount()
@@ -46,7 +50,9 @@ class GPUMonitorCallback(TrainerCallback):
                 print(f"✅ GPU 监控已初始化，检测到 {self.device_count} 个 GPU")
             except Exception as e:
                 print(f"⚠️  NVML 初始化失败: {e}，将使用基础监控")
-                PYNVML_AVAILABLE = False
+                self.pynvml_available = False
+                self.device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+                print(f"✅ GPU 监控已初始化（基础模式），检测到 {self.device_count} 个 GPU")
         else:
             self.device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
             print(f"✅ GPU 监控已初始化（基础模式），检测到 {self.device_count} 个 GPU")
@@ -92,7 +98,7 @@ class GPUMonitorCallback(TrainerCallback):
         if self.writer is not None:
             self.writer.close()
         
-        if PYNVML_AVAILABLE:
+        if self.pynvml_available:
             try:
                 pynvml.nvmlShutdown()
             except:
@@ -123,7 +129,7 @@ class GPUMonitorCallback(TrainerCallback):
                 metrics['memory_reserved_percent'] = (memory_reserved / memory_total * 100) if memory_total > 0 else 0
             
             # 高级指标（使用 NVML，如果可用）
-            if PYNVML_AVAILABLE and gpu_id < len(self.handles):
+            if self.pynvml_available and gpu_id < len(self.handles):
                 try:
                     handle = self.handles[gpu_id]
                     

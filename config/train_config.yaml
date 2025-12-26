@@ -8,7 +8,7 @@ model:
   name: "hfl/llama-3-chinese-8b-instruct-v3"
   # 训练后保存的新模型名称
   new_name: "llama3-law-assistant-lora"
-  # 最大上下文长度 (5090显存大，可以尝试 2048 或 4096)
+  # 最大上下文长度 (RTX 5090 32GB 可以支持 2048)
   max_seq_length: 2048
 
 data:
@@ -26,7 +26,7 @@ quantization:
 
 lora:
   # LoRA 的秩 (Rank)。值越大，参数越多，拟合能力越强，显存占用越高
-  # 5090 显存充足，这里设置为 64 (普通显卡通常设 8 或 16)
+  # RTX 5090 32GB 可以支持更高的 rank
   r: 64
   # LoRA 缩放因子，通常是 r 的 2 倍
   lora_alpha: 128
@@ -45,11 +45,12 @@ training:
   output_dir: "./output"
   # 训练轮数
   num_train_epochs: 3
-  # 单卡批次大小 (5090 + 4bit量化，可以尝试 8, 16 甚至更高)
+  # 单卡批次大小 (RTX 5090 32GB 可以支持更大的批次)
   per_device_train_batch_size: 8
   # 验证批次大小（用于评估）
   per_device_eval_batch_size: 8
   # 梯度累积步数 (如果显存不够，增大这个值，减小 batch_size)
+  # 实际批次大小 = per_device_train_batch_size * gradient_accumulation_steps
   gradient_accumulation_steps: 1
   # 学习率
   learning_rate: 2.0e-4

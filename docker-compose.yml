@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # vLLM 推理服务
+  vllm-service:
+    build:
+      context: .
+      dockerfile: docker/vllm/Dockerfile
+    container_name: legalflash-rag-vllm
+    image: legalflash-rag-vllm:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂载模型目录（需要提前准备）
+      - ./output/llama3-law-merged:/app/models/llama3-law-merged:ro
+      # 可选：挂载日志目录
+      - ./logs/vllm:/app/logs
+    environment:
+      - MODEL_PATH=/app/models/llama3-law-merged
+      - HOST=0.0.0.0
+      - PORT=8000
+      - DTYPE=bfloat16
+      - GPU_MEMORY_UTILIZATION=0.85
+      - MAX_MODEL_LEN=4096
+      - MAX_NUM_SEQS=128
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    networks:
+      - legalflash-rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # App 服务（FastAPI + Streamlit）
+  app-service:
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: legalflash-rag-app
+    image: legalflash-rag-app:latest
+    ports:
+      - "8080:8080"  # FastAPI
+      - "8501:8501"  # Streamlit
+    volumes:
+      # 挂载数据目录
+      - ./data:/app/data
+      # 挂载向量数据库
+      - ./chroma_db:/app/chroma_db
+      - ./chroma_db_case:/app/chroma_db_case
+      - ./chroma_db_judgement:/app/chroma_db_judgement
+      # 挂载配置目录
+      - ./config:/app/config
+      # 可选：挂载日志目录
+      - ./logs/app:/app/logs
+    environment:
+      - VLLM_URL=http://vllm-service:8000
+      - HF_ENDPOINT=https://hf-mirror.com
+    depends_on:
+      vllm-service:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - legalflash-rag-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  legalflash-rag-network:
+    driver: bridge
+
+volumes:
+  # 可选：如果需要持久化数据
+  # chroma_db_data:
+  # chroma_db_case_data:
+  # chroma_db_judgement_data:
+

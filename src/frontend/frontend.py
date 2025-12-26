@@ -3,7 +3,9 @@ import requests
 import json
 
 # === 配置 ===
-BACKEND_URL = "http://localhost:8080/api/rag/chat"
+# 从环境变量读取后端地址，默认使用 Docker 内部网络
+import os
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8080/api/rag/chat")
 st.set_page_config(page_title="LegalFlash-RAG 法律助手", page_icon="⚖️", layout="wide")
 
 # === 界面标题 ===
